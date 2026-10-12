@@ -1,7 +1,5 @@
 project.description = 'Manage data in DuckDB with Kestra\'s JDBC plugin.'
 
-// Keep duckdb_jdbc inline for Dependabot; update duckdbCommunityExtensionVersion in sync.
-def duckdbCommunityExtensionVersion = "v1.5.6"
 def bundledDuckDbExtensionsDir = layout.buildDirectory.dir("generated/duckdb-community-extensions")
 def bundledDuckDbExtensions = [
     ion: ["linux_amd64", "linux_arm64"]
@@ -9,9 +7,24 @@ def bundledDuckDbExtensions = [
 def bundledDuckDbExtensionsMetadataFile = bundledDuckDbExtensionsDir.map { it.file("duckdb-community-extensions.properties") }
 
 tasks.register("bundleDuckDbCommunityExtensions") {
+    dependsOn configurations.runtimeClasspath
     outputs.dir(bundledDuckDbExtensionsDir)
 
     doLast {
+        def duckdbArtifact = configurations.runtimeClasspath.resolvedConfiguration.resolvedArtifacts.find {
+            it.moduleVersion.id.group == "org.duckdb" && it.moduleVersion.id.name == "duckdb_jdbc"
+        }
+        if (duckdbArtifact == null) {
+            throw new GradleException("duckdb_jdbc dependency not found on runtime classpath")
+        }
+
+        def driverVersion = duckdbArtifact.moduleVersion.id.version
+        def versionParts = driverVersion.split("\\.")
+        if (versionParts.length < 3) {
+            throw new GradleException("Unexpected duckdb_jdbc version '${driverVersion}'; expected at least three numeric segments")
+        }
+        def duckdbCommunityExtensionVersion = "v${versionParts[0]}.${versionParts[1]}.${versionParts[2]}"
+
         def metadataFile = bundledDuckDbExtensionsMetadataFile.get().asFile
         metadataFile.parentFile.mkdirs()
 
@@ -39,8 +52,15 @@ tasks.register("bundleDuckDbCommunityExtensions") {
                 def gzUrl = new URL("https://community-extensions.duckdb.org/${duckdbCommunityExtensionVersion}/${platform}/${extensionName}.duckdb_extension.gz")
                 def gzFile = new File(outputDir, "${extensionName}.duckdb_extension.gz")
 
-                gzUrl.withInputStream { input ->
-                    gzFile.withOutputStream { output -> output << input }
+                try {
+                    gzUrl.withInputStream { input ->
+                        gzFile.withOutputStream { output -> output << input }
+                    }
+                } catch (IOException e) {
+                    throw new GradleException(
+                        "Failed to download bundled DuckDB extension '${extensionName}' for ${duckdbCommunityExtensionVersion}/${platform} from ${gzUrl}: ${e.message}",
+                        e
+                    )
                 }
 
                 new java.util.zip.GZIPInputStream(new FileInputStream(gzFile)).withCloseable { input ->
